@@ -12,6 +12,7 @@ import sys
 import textwrap
 import time
 import urllib.parse
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -225,7 +226,90 @@ def package_is_path(package: str):
         )
 
 
-def _dispatch_placeholder(args: argparse.Namespace, ctx: Any) -> ExitCode:
+@dataclass
+class DispatchContext:
+    verbose: bool
+    pip_args: list[str]
+    venv_args: list[str]
+    venv_container: VenvContainer
+    venv_dir: Optional[Path]
+    venv_dirs: Optional[dict[str, Path]]
+    skip_list: Optional[list[str]]
+    python_flag_passed: bool
+
+
+def _cmd_run(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
+    commands.run(
+        args.app_with_args[0],
+        args.spec,
+        args.with_,
+        args.path,
+        args.app_with_args[1:],
+        args.python,
+        ctx.pip_args,
+        ctx.venv_args,
+        args.pypackages,
+        ctx.verbose,
+        not args.no_cache,
+    )
+    # We should never reach here because run() is NoReturn.
+    return ExitCode(1)  # type: ignore[unreachable]
+
+
+def _cmd_interpreter_list(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
+    return commands.list_interpreters(ctx.venv_container)
+
+
+def _cmd_interpreter_prune(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
+    return commands.prune_interpreters(ctx.venv_container)
+
+
+def _cmd_interpreter_upgrade(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
+    return commands.upgrade_interpreters(ctx.venv_container, ctx.verbose)
+
+
+def _make_interpreter_help(interpreter_subparser: argparse.ArgumentParser) -> Callable[..., ExitCode]:
+    def _help(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
+        interpreter_subparser.print_help()
+        return EXIT_CODE_OK
+
+    return _help
+
+
+def _cmd_runpip(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
+    if not ctx.venv_dir:
+        raise PipxError("Developer error: venv_dir is not defined.")
+    runpip_args = get_runpip_args(args.pipargs)
+    return commands.run_pip(args.package, ctx.venv_dir, runpip_args, args.verbose)
+
+
+def _cmd_ensurepath(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
+    try:
+        return commands.ensure_pipx_paths(prepend=args.prepend, force=args.force, all_shells=args.all_shells)
+    except Exception as e:
+        logger.debug("Uncaught Exception:", exc_info=True)
+        raise PipxError(str(e), wrap_message=False) from None
+
+
+def _cmd_completions(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
+    print(constants.completion_instructions)
+    return ExitCode(0)
+
+
+def _cmd_reinstall(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
+    if not ctx.venv_dir:
+        raise PipxError("Developer error: venv_dir is not defined.")
+    return commands.reinstall(
+        venv_dir=ctx.venv_dir,
+        local_bin_dir=paths.ctx.bin_dir,
+        local_man_dir=paths.ctx.man_dir,
+        python=args.python,
+        verbose=ctx.verbose,
+        python_flag_passed=ctx.python_flag_passed,
+    )
+
+
+def _dispatch_placeholder(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
     raise PipxError("Dispatch placeholder reached - refactor incomplete (issue #1794).")
 
 
@@ -762,7 +846,7 @@ def _add_reinstall(subparsers, venv_completer: VenvCompleter, shared_parser: arg
     )
     p.add_argument("package").completer = venv_completer
     add_python_options(p)
-    p.set_defaults(func=_dispatch_placeholder)
+    p.set_defaults(func=_cmd_reinstall)
 
 
 def _add_reinstall_all(subparsers: argparse._SubParsersAction, shared_parser: argparse.ArgumentParser) -> None:
@@ -833,10 +917,10 @@ def _add_interpreter(
         help="Upgrade installed interpreters to the latest available micro/patch version",
         description="Upgrade installed interpreters to the latest available micro/patch version",
     )
-    list_p.set_defaults(func=_dispatch_placeholder)
-    prune_p.set_defaults(func=_dispatch_placeholder)
-    upgrade_p.set_defaults(func=_dispatch_placeholder)
-    p.set_defaults(func=_dispatch_placeholder)
+    list_p.set_defaults(func=_cmd_interpreter_list)
+    prune_p.set_defaults(func=_cmd_interpreter_prune)
+    upgrade_p.set_defaults(func=_cmd_interpreter_upgrade)
+    p.set_defaults(func=_make_interpreter_help(p))
     return p
 
 
@@ -893,7 +977,7 @@ def _add_run(subparsers: argparse._SubParsersAction, shared_parser: argparse.Arg
     p.add_argument("--spec", help=SPEC_HELP)
     add_python_options(p)
     add_pip_venv_args(p)
-    p.set_defaults(subparser=p, func=_dispatch_placeholder)
+    p.set_defaults(subparser=p, func=_cmd_run)
 
     # modify usage text to show required app argument
     p.usage = re.sub(r"^usage: ", "", p.format_usage())
@@ -918,7 +1002,7 @@ def _add_runpip(subparsers, venv_completer: VenvCompleter, shared_parser: argpar
         default=[],
         help="Arguments to forward to pip command",
     )
-    p.set_defaults(func=_dispatch_placeholder)
+    p.set_defaults(func=_cmd_runpip)
 
 
 def _add_ensurepath(subparsers: argparse._SubParsersAction, shared_parser: argparse.ArgumentParser) -> None:
@@ -956,7 +1040,7 @@ def _add_ensurepath(subparsers: argparse._SubParsersAction, shared_parser: argpa
         action="store_true",
         help=("Add directories to PATH in all shells instead of just the current one."),
     )
-    p.set_defaults(func=_dispatch_placeholder)
+    p.set_defaults(func=_cmd_ensurepath)
 
 
 def _add_environment(subparsers: argparse._SubParsersAction, shared_parser: argparse.ArgumentParser) -> None:
@@ -1060,7 +1144,7 @@ def get_command_parser() -> tuple[argparse.ArgumentParser, dict[str, argparse.Ar
         description="Print instructions on enabling shell completions for pipx",
         parents=[shared_parser],
     )
-    completions_p.set_defaults(func=_dispatch_placeholder)
+    completions_p.set_defaults(func=_cmd_completions)
     return parser, subparsers_with_subcommands
 
 
