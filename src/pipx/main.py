@@ -344,6 +344,14 @@ def _cmd_list(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
     )
 
 
+def _cmd_pin(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
+    return commands.pin(ctx.venv_dir, ctx.verbose, ctx.skip_list, args.injected_only)
+
+
+def _cmd_unpin(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
+    return commands.unpin(ctx.venv_dir, ctx.verbose)
+
+
 def _dispatch_placeholder(args: argparse.Namespace, ctx: DispatchContext) -> ExitCode:
     raise PipxError("Dispatch placeholder reached - refactor incomplete (issue #1794).")
 
@@ -762,7 +770,7 @@ def _add_pin(subparsers, venv_completer: VenvCompleter, shared_parser: argparse.
         default=[],
         help="Skip these packages. Implies `--injected-only`.",
     )
-    p.set_defaults(func=_dispatch_placeholder)
+    p.set_defaults(func=_cmd_pin)
 
 
 def _add_unpin(subparsers, venv_completer: VenvCompleter, shared_parser: argparse.ArgumentParser) -> None:
@@ -773,7 +781,7 @@ def _add_unpin(subparsers, venv_completer: VenvCompleter, shared_parser: argpars
         parents=[shared_parser],
     )
     p.add_argument("package", help="Installed package to unpin")
-    p.set_defaults(func=_dispatch_placeholder)
+    p.set_defaults(func=_cmd_unpin)
 
 
 def _add_upgrade(subparsers, venv_completer: VenvCompleter, shared_parser: argparse.ArgumentParser) -> None:
